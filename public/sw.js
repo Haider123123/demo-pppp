@@ -1,58 +1,48 @@
-const CACHE_NAME = 'dentro-v2';
-const FONT_CACHE_NAME = 'dentro-fonts-v1';
+/* ===============================
+   Dentro Offline-First SW
+================================ */
 
-// Core app assets to cache
-const STATIC_ASSETS = [
+const CACHE_VERSION = 'dentro-v3';
+const APP_CACHE = `app-${CACHE_VERSION}`;
+const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
+
+/* ===============================
+   Core files (minimum to boot app)
+================================ */
+
+const CORE_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
   '/icon-192.png',
-  '/icon-512.png',
+  '/icon-512.png'
 ];
 
-// Font URLs to cache
-const FONT_URLS = [
-  'https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap',
-  'https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-Regular.ttf',
-  'https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-Bold.ttf',
-];
+/* ===============================
+   INSTALL - Precache core
+================================ */
 
-// Install event - cache core assets
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
+
   event.waitUntil(
-    Promise.all([
-      // Cache static assets
-      caches.open(CACHE_NAME).then((cache) => {
-        console.log('Caching static assets');
-        return cache.addAll(STATIC_ASSETS);
-      }),
-      // Cache fonts separately
-      caches.open(FONT_CACHE_NAME).then(async (cache) => {
-        console.log('Caching fonts');
-        for (const url of FONT_URLS) {
-          try {
-            const response = await fetch(url, { mode: 'cors' });
-            if (response.ok) {
-              await cache.put(url, response);
-            }
-          } catch (e) {
-            console.log('Failed to cache font:', url, e);
-          }
-        }
-      }),
-    ]).then(() => self.skipWaiting())
+    caches.open(APP_CACHE).then((cache) => {
+      return cache.addAll(CORE_ASSETS);
+    })
   );
 });
 
-// Activate event - clean up old caches
+/* ===============================
+   ACTIVATE - Clean old caches
+================================ */
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
+    caches.keys().then((keys) => {
       return Promise.all(
-        cacheNames.map((cacheName) => {
-          if (cacheName !== CACHE_NAME && cacheName !== FONT_CACHE_NAME) {
-            console.log('Deleting old cache:', cacheName);
-            return caches.delete(cacheName);
+        keys.map((key) => {
+          if (key !== APP_CACHE && key !== RUNTIME_CACHE) {
+            return caches.delete(key);
           }
         })
       );
@@ -60,118 +50,97 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Fetch event - serve from cache, fallback to network
+/* ===============================
+   FETCH STRATEGY
+================================ */
+
 self.addEventListener('fetch', (event) => {
-  const { request } = event;
+  const request = event.request;
+
+  if (request.method !== 'GET') return;
+
   const url = new URL(request.url);
 
-  // Skip non-GET requests
-  if (request.method !== 'GET') {
-    return;
-  }
+  // Ignore non-http
+  if (!url.protocol.startsWith('http')) return;
 
-  // Skip chrome-extension and other non-http requests
-  if (!url.protocol.startsWith('http')) {
-    return;
-  }
+  /* ===============================
+     1) Navigation (SPA support)
+     Always return cached index.html
+  ================================ */
 
-  // Handle font requests with cache-first strategy
-  if (
-    url.hostname === 'fonts.googleapis.com' ||
-    url.hostname === 'fonts.gstatic.com' ||
-    url.hostname === 'raw.githubusercontent.com' ||
-    request.url.includes('.ttf') ||
-    request.url.includes('.woff')
-  ) {
+  if (request.mode === 'navigate') {
     event.respondWith(
-      caches.open(FONT_CACHE_NAME).then(async (cache) => {
-        const cachedResponse = await cache.match(request);
-        if (cachedResponse) {
-          return cachedResponse;
-        }
-        try {
-          const networkResponse = await fetch(request);
-          if (networkResponse.ok) {
-            cache.put(request, networkResponse.clone());
-          }
-          return networkResponse;
-        } catch (e) {
-          console.log('Font fetch failed:', e);
-          // Return a basic fallback for fonts
-          return new Response('', { status: 404 });
-        }
+      caches.match('/index.html').then((response) => {
+        return response || fetch(request);
       })
     );
     return;
   }
 
-  // Handle navigation requests - Network first, fallback to cache
-  if (request.mode === 'navigate') {
+  /* ===============================
+     2) Same-origin assets (JS/CSS/images)
+     Cache First (true offline)
+  ================================ */
+
+  if (url.origin === self.location.origin) {
     event.respondWith(
-      fetch(request)
-        .then((response) => {
-          // Cache successful responses
-          if (response.ok) {
-            const responseClone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(request, responseClone);
-            });
-          }
-          return response;
-        })
-        .catch(() => {
-          // Offline - return cached version
-          return caches.match(request).then((cachedResponse) => {
-            if (cachedResponse) {
-              return cachedResponse;
+      caches.match(request).then((cached) => {
+        if (cached) {
+          return cached;
+        }
+
+        return fetch(request)
+          .then((networkResponse) => {
+            if (!networkResponse || networkResponse.status !== 200) {
+              return networkResponse;
             }
-            // Return main page for SPA routing
-            return caches.match('/');
+
+            const cloned = networkResponse.clone();
+            caches.open(RUNTIME_CACHE).then((cache) => {
+              cache.put(request, cloned);
+            });
+
+            return networkResponse;
+          })
+          .catch(() => {
+            return new Response('Offline', { status: 503 });
           });
-        })
+      })
     );
     return;
   }
 
-  // Handle static assets - Cache first, fallback to network
-  event.respondWith(
-    caches.match(request).then((cachedResponse) => {
-      if (cachedResponse) {
-        // Return cached version and update cache in background
-        fetch(request)
-          .then((networkResponse) => {
-            if (networkResponse.ok) {
-              caches.open(CACHE_NAME).then((cache) => {
-                cache.put(request, networkResponse);
-              });
-            }
-          })
-          .catch(() => {});
-        return cachedResponse;
-      }
+  /* ===============================
+     3) External resources (fonts/CDN)
+     Cache then network fallback
+  ================================ */
 
-      // Not in cache - fetch from network
+  event.respondWith(
+    caches.match(request).then((cached) => {
+      if (cached) return cached;
+
       return fetch(request)
-        .then((networkResponse) => {
-          if (networkResponse.ok) {
-            const responseClone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(request, responseClone);
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(RUNTIME_CACHE).then((cache) => {
+              cache.put(request, clone);
             });
           }
-          return networkResponse;
+          return response;
         })
-        .catch(() => {
-          // Offline and not in cache
-          return new Response('Offline', { status: 503 });
-        });
+        .catch(() => new Response('', { status: 404 }));
     })
   );
 });
 
-// Handle messages from the app
+/* ===============================
+   Manual update trigger
+================================ */
+
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+  if (event.data === 'SKIP_WAITING') {
     self.skipWaiting();
   }
 });

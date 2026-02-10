@@ -1,0 +1,19 @@
+{
+  "name": "Dentro - Medical Prescription",
+  "short_name": "Dentro",
+  "description": "تطبيق طباعة الوصفات الطبية - Medical Prescription App",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#4f46e5",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["medical", "health", "utilities"]
+}
